@@ -181,8 +181,15 @@
 
   function parseColor(s) {
     s = s.trim().replace(/^["']|["']$/g, '');
-    if (/^#?[0-9a-fA-F]{6}$/.test(s)) return s.startsWith('#') ? s : '#' + s;
-    if (/^#?[0-9a-fA-F]{3}$/.test(s)) { s = s.replace('#',''); return '#' + s.split('').map(c=>c+c).join(''); }
+    if (!s.startsWith('#')) s = '#' + s;
+    const hex = s.slice(1);
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) return '#' + hex.slice(0, 6);           // #rrggbb
+    if (/^[0-9a-fA-F]{8}$/.test(hex)) return '#' + hex.slice(0, 6);           // #rrggbbaa → drop alpha
+    if (/^[0-9a-fA-F]{3}$/.test(hex)) return '#' + hex.split('').map(c=>c+c).join(''); // #rgb
+    if (/^[0-9a-fA-F]{4}$/.test(hex)) {                                        // #rgba → drop alpha
+      const [r,g,b] = hex.slice(0,3).split('').map(c=>c+c);
+      return '#' + r + g + b;
+    }
     return null;
   }
 
