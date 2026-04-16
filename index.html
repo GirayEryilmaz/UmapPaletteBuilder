@@ -11,13 +11,11 @@
   .warning-bar { background: #fff3cd; color: #856404; border: 1px solid #ffc107; border-radius: 6px; padding: 8px 14px; margin-bottom: 12px; font-size: .85rem; max-width: 900px; width: 100%; display: none; }
   .info-bar { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; border-radius: 6px; padding: 8px 14px; margin-bottom: 12px; font-size: .85rem; max-width: 900px; width: 100%; display: none; }
 
-  /* Upload */
   #upload-area { width: 100%; max-width: 900px; border: 2px dashed #b0bec5; border-radius: 12px; padding: 48px; text-align: center; cursor: pointer; transition: background .2s, border-color .2s; margin-bottom: 20px; background: #fff; }
   #upload-area.drag-over { background: #e3f2fd; border-color: #42a5f5; }
   #upload-area p { font-size: 1rem; color: #607d8b; }
   #upload-area input { display: none; }
 
-  /* Controls */
   .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; max-width: 900px; width: 100%; }
   .controls button { padding: 8px 16px; border: none; border-radius: 6px; font-size: .85rem; cursor: pointer; color: #fff; transition: opacity .15s; }
   .controls button:hover { opacity: .85; }
@@ -28,18 +26,15 @@
   .slider-group { display: flex; align-items: center; gap: 6px; font-size: .85rem; margin-left: auto; }
   .slider-group input[type=range] { width: 100px; }
 
-  /* Canvas */
   #canvas-wrap { position: relative; max-width: 900px; width: 100%; background: #fff; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.1); margin-bottom: 18px; }
   canvas { display: block; width: 100%; border-radius: 10px; }
   #tooltip { position: absolute; pointer-events: none; background: rgba(30,30,30,.88); color: #fff; font-size: .78rem; padding: 5px 10px; border-radius: 5px; display: none; white-space: nowrap; }
 
-  /* Legend */
   #legend { display: flex; flex-wrap: wrap; gap: 8px; max-width: 900px; width: 100%; }
   .legend-item { display: flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: .82rem; background: #fff; border: 1px solid #e0e0e0; transition: box-shadow .15s; user-select: none; }
   .legend-item:hover { box-shadow: 0 0 0 2px #42a5f5; }
   .legend-swatch { width: 16px; height: 16px; border-radius: 4px; border: 1px solid #ccc; flex-shrink: 0; }
 
-  /* Hidden color input */
   #hidden-color { position: fixed; top: -100px; left: -100px; opacity: 0; width: 0; height: 0; }
 
   .app-section { display: none; max-width: 900px; width: 100%; }
@@ -82,10 +77,9 @@
 (() => {
   const MAX_PREVIEW = 100000;
 
-  /* ── state ── */
-  let allPoints = [];       // every row from CSV
-  let displayPoints = [];   // subset rendered on canvas
-  let clusters = {};        // name → {color}
+  let allPoints = [];
+  let displayPoints = [];
+  let clusters = {};
   let clusterNames = [];
   let highlightCluster = null;
   let ptRadius = 3;
@@ -93,7 +87,6 @@
   const CANVAS_CSS = 900;
   const CANVAS_H_CSS = 620;
 
-  /* ── DOM refs ── */
   const uploadArea = document.getElementById('upload-area');
   const fileInput  = document.getElementById('file-input');
   const appSection = document.getElementById('app');
@@ -106,7 +99,7 @@
   const ptSlider   = document.getElementById('pt-size');
   const ptVal      = document.getElementById('pt-size-val');
 
-  /* ── upload handling ── */
+  /* ── upload ── */
   uploadArea.addEventListener('click', () => fileInput.click());
   uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
   uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
@@ -120,15 +113,47 @@
     reader.readAsText(file);
   }
 
+  /* ── CSV line parser (handles quoted fields with commas and escaped quotes) ── */
+  function parseCSVLine(line) {
+    const fields = [];
+    let i = 0, len = line.length;
+    while (i < len) {
+      if (line[i] === '"') {
+        let val = '';
+        i++;
+        while (i < len) {
+          if (line[i] === '"') {
+            if (i + 1 < len && line[i + 1] === '"') {
+              val += '"';
+              i += 2;
+            } else {
+              i++;
+              break;
+            }
+          } else {
+            val += line[i++];
+          }
+        }
+        fields.push(val);
+        if (i < len && line[i] === ',') i++;
+      } else {
+        const next = line.indexOf(',', i);
+        if (next === -1) { fields.push(line.slice(i).trim()); break; }
+        fields.push(line.slice(i, next).trim());
+        i = next + 1;
+      }
+    }
+    return fields;
+  }
+
   /* ── CSV parsing ── */
   function parseCSV(text) {
     const warnings = [];
-    const lines = text.trim().split(/\r?\n/).map(l => l.split(',').map(s => s.trim()));
+    const lines = text.trim().split(/\r?\n/).map(l => parseCSVLine(l));
     let start = 0;
     if (lines.length > 1 && (isNaN(Number(lines[0][1])) || isNaN(Number(lines[0][2])))) start = 1;
 
     allPoints = []; clusters = {}; clusterNames = [];
-    let hasColorCol = false;
     let badColorCount = 0;
 
     for (let i = start; i < lines.length; i++) {
@@ -139,7 +164,6 @@
       if (isNaN(x) || isNaN(y)) { warnings.push(`Row ${i+1}: non-numeric x/y — skipped`); continue; }
       let color = null;
       if (r.length >= 4 && r[3]) {
-        hasColorCol = true;
         color = parseColor(r[3]);
         if (!color) badColorCount++;
       }
@@ -150,7 +174,6 @@
 
     if (allPoints.length === 0) { alert('No valid data rows found.'); return; }
 
-    // assign default palette where needed
     const need = clusterNames.filter(n => !clusters[n].color);
     if (need.length) {
       const pal = generateDistinct(clusterNames.length);
@@ -163,7 +186,6 @@
     if (badColorCount) warnings.push(`${badColorCount} invalid color value(s) replaced with defaults.`);
     showWarnings(warnings);
 
-    // stratified sample for display
     displayPoints = stratifiedSample(allPoints, MAX_PREVIEW);
     if (allPoints.length > MAX_PREVIEW) {
       infoBar.textContent = `Showing ${displayPoints.length.toLocaleString()} of ${allPoints.length.toLocaleString()} cells (stratified sample). Export includes all cells.`;
@@ -179,14 +201,15 @@
     draw();
   }
 
+  /* ── color parser (supports #rgb, #rgba, #rrggbb, #rrggbbaa) ── */
   function parseColor(s) {
     s = s.trim().replace(/^["']|["']$/g, '');
     if (!s.startsWith('#')) s = '#' + s;
     const hex = s.slice(1);
-    if (/^[0-9a-fA-F]{6}$/.test(hex)) return '#' + hex.slice(0, 6);           // #rrggbb
-    if (/^[0-9a-fA-F]{8}$/.test(hex)) return '#' + hex.slice(0, 6);           // #rrggbbaa → drop alpha
-    if (/^[0-9a-fA-F]{3}$/.test(hex)) return '#' + hex.split('').map(c=>c+c).join(''); // #rgb
-    if (/^[0-9a-fA-F]{4}$/.test(hex)) {                                        // #rgba → drop alpha
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) return '#' + hex;
+    if (/^[0-9a-fA-F]{8}$/.test(hex)) return '#' + hex.slice(0, 6);
+    if (/^[0-9a-fA-F]{3}$/.test(hex)) return '#' + hex.split('').map(c=>c+c).join('');
+    if (/^[0-9a-fA-F]{4}$/.test(hex)) {
       const [r,g,b] = hex.slice(0,3).split('').map(c=>c+c);
       return '#' + r + g + b;
     }
@@ -203,7 +226,6 @@
   function stratifiedSample(pts, max) {
     if (pts.length <= max) return pts.slice();
 
-    // group by cluster
     const groups = {};
     for (const p of pts) {
       if (!groups[p.cluster]) groups[p.cluster] = [];
@@ -212,16 +234,14 @@
 
     const names = Object.keys(groups);
     const nClusters = names.length;
-    // at least 1 per cluster, rest distributed proportionally
     const reserved = Math.min(nClusters, max);
     const remaining = max - reserved;
 
-    const sampled = [];
-    // seeded pseudo-random for reproducibility
     let seed = 42;
     function rand() { seed = (seed * 16807 + 0) % 2147483647; return seed / 2147483647; }
     function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
 
+    const sampled = [];
     for (const name of names) {
       const group = groups[name];
       const proportion = group.length / pts.length;
@@ -229,7 +249,6 @@
       shuffle(group);
       for (let i = 0; i < n; i++) sampled.push(group[i]);
     }
-
     shuffle(sampled);
     return sampled;
   }
@@ -254,7 +273,7 @@
     return '#' + toHex(0) + toHex(8) + toHex(4);
   }
 
-  /* ── canvas setup & coordinate mapping ── */
+  /* ── canvas setup ── */
   let xMin, xMax, yMin, yMax, padL=50, padR=20, padT=20, padB=30;
 
   function initCanvas() {
@@ -360,7 +379,6 @@
   function openPicker(name) {
     pickerTarget = name;
     const picker = document.getElementById('hidden-color');
-    // clone to clear old listeners
     const fresh = picker.cloneNode(true);
     picker.parentNode.replaceChild(fresh, picker);
 
@@ -390,10 +408,13 @@
     draw(); updateLegendSwatches();
   });
 
-  /* ── export (always uses allPoints) ── */
+  /* ── export (always all cells, quoted cluster names) ── */
   document.getElementById('btn-export-csv').addEventListener('click', () => {
     let csv = 'cluster,x,y,color\n';
-    for (const p of allPoints) csv += `${p.cluster},${p.x},${p.y},${clusters[p.cluster].color}\n`;
+    for (const p of allPoints) {
+      const name = p.cluster.includes(',') ? `"${p.cluster.replace(/"/g, '""')}"` : p.cluster;
+      csv += `${name},${p.x},${p.y},${clusters[p.cluster].color}\n`;
+    }
     const blob = new Blob([csv], {type: 'text/csv'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
