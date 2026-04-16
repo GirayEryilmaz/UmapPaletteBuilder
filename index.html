@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UMAP Palette Builder</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; display: flex; flex-direction: column; align-items: center; padding: 24px; }
+  h1 { font-size: 1.5rem; margin-bottom: 16px; }
+  .warning-bar { background: #fff3cd; color: #856404; border: 1px solid #ffc107; border-radius: 6px; padding: 8px 14px; margin-bottom: 12px; font-size: .85rem; max-width: 900px; width: 100%; display: none; }
+  .info-bar { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; border-radius: 6px; padding: 8px 14px; margin-bottom: 12px; font-size: .85rem; max-width: 900px; width: 100%; display: none; }
+
+  /* Upload */
+  #upload-area { width: 100%; max-width: 900px; border: 2px dashed #b0bec5; border-radius: 12px; padding: 48px; text-align: center; cursor: pointer; transition: background .2s, border-color .2s; margin-bottom: 20px; background: #fff; }
+  #upload-area.drag-over { background: #e3f2fd; border-color: #42a5f5; }
+  #upload-area p { font-size: 1rem; color: #607d8b; }
+  #upload-area input { display: none; }
+
+  /* Controls */
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; max-width: 900px; width: 100%; }
+  .controls button { padding: 8px 16px; border: none; border-radius: 6px; font-size: .85rem; cursor: pointer; color: #fff; transition: opacity .15s; }
+  .controls button:hover { opacity: .85; }
+  #btn-randomize { background: #7c4dff; }
+  #btn-distinct { background: #00897b; }
+  #btn-export-csv { background: #1e88e5; }
+  #btn-copy-json { background: #fb8c00; }
+  .slider-group { display: flex; align-items: center; gap: 6px; font-size: .85rem; margin-left: auto; }
+  .slider-group input[type=range] { width: 100px; }
+
+  /* Canvas */
+  #canvas-wrap { position: relative; max-width: 900px; width: 100%; background: #fff; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.1); margin-bottom: 18px; }
+  canvas { display: block; width: 100%; border-radius: 10px; }
+  #tooltip { position: absolute; pointer-events: none; background: rgba(30,30,30,.88); color: #fff; font-size: .78rem; padding: 5px 10px; border-radius: 5px; display: none; white-space: nowrap; }
+
+  /* Legend */
+  #legend { display: flex; flex-wrap: wrap; gap: 8px; max-width: 900px; width: 100%; }
+  .legend-item { display: flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: .82rem; background: #fff; border: 1px solid #e0e0e0; transition: box-shadow .15s; user-select: none; }
+  .legend-item:hover { box-shadow: 0 0 0 2px #42a5f5; }
+  .legend-swatch { width: 16px; height: 16px; border-radius: 4px; border: 1px solid #ccc; flex-shrink: 0; }
+
+  /* Hidden color input */
+  #hidden-color { position: fixed; top: -100px; left: -100px; opacity: 0; width: 0; height: 0; }
+
+  .app-section { display: none; max-width: 900px; width: 100%; }
+  .app-section.visible { display: block; }
+</style>
+</head>
+<body>
+
+<h1>🎨 UMAP Palette Builder</h1>
+<div class="warning-bar" id="warning-bar"></div>
+<div class="info-bar" id="info-bar"></div>
+
+<div id="upload-area">
+  <p>Drag &amp; drop a CSV file here, or click to browse</p>
+  <input type="file" id="file-input" accept=".csv">
+</div>
+
+<div class="app-section" id="app">
+  <div class="controls">
+    <button id="btn-randomize">Randomize Palette</button>
+    <button id="btn-distinct">Auto Distinct Colors</button>
+    <button id="btn-export-csv">Export CSV</button>
+    <button id="btn-copy-json">Copy JSON</button>
+    <div class="slider-group">
+      <label for="pt-size">Point size</label>
+      <input type="range" id="pt-size" min="1" max="12" step="0.5" value="3">
+      <span id="pt-size-val">3</span>
+    </div>
+  </div>
+  <div id="canvas-wrap">
+    <canvas id="umap"></canvas>
+    <div id="tooltip"></div>
+  </div>
+  <div id="legend"></div>
+</div>
+
+<input type="color" id="hidden-color">
+
+<script>
+(() => {
+  const MAX_PREVIEW = 100000;
+
+  /* ── state ── */
+  let allPoints = [];       // every row from CSV
+  let displayPoints = [];   // subset rendered on canvas
+  let clusters = {};        // name → {color}
+  let clusterNames = [];
+  let highlightCluster = null;
+  let ptRadius = 3;
+  const DPR = window.devicePixelRatio || 1;
+  const CANVAS_CSS = 900;
+  const CANVAS_H_CSS = 620;
+
+  /* ── DOM refs ── */
+  const uploadArea = document.getElementById('upload-area');
+  const fileInput  = document.getElementById('file-input');
+  const appSection = document.getElementById('app');
+  const canvas     = document.getElementById('umap');
+  const ctx        = canvas.getContext('2d');
+  const tooltip    = document.getElementById('tooltip');
+  const legendEl   = document.getElementById('legend');
+  const warning    = document.getElementById('warning-bar');
+  const infoBar    = document.getElementById('info-bar');
+  const ptSlider   = document.getElementById('pt-size');
+  const ptVal      = document.getElementById('pt-size-val');
+
+  /* ── upload handling ── */
+  uploadArea.addEventListener('click', () => fileInput.click());
+  uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
+  uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
+  uploadArea.addEventListener('drop', e => { e.preventDefault(); uploadArea.classList.remove('drag-over'); handleFile(e.dataTransfer.files[0]); });
+  fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+  function handleFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => parseCSV(e.target.result);
+    reader.readAsText(file);
+  }
+
+  /* ── CSV parsing ── */
+  function parseCSV(text) {
+    const warnings = [];
+    const lines = text.trim().split(/\r?\n/).map(l => l.split(',').map(s => s.trim()));
+    let start = 0;
+    if (lines.length > 1 && (isNaN(Number(lines[0][1])) || isNaN(Number(lines[0][2])))) start = 1;
+
+    allPoints = []; clusters = {}; clusterNames = [];
+    let hasColorCol = false;
+    let badColorCount = 0;
+
+    for (let i = start; i < lines.length; i++) {
+      const r = lines[i];
+      if (r.length < 3) continue;
+      const name = r[0];
+      const x = Number(r[1]), y = Number(r[2]);
+      if (isNaN(x) || isNaN(y)) { warnings.push(`Row ${i+1}: non-numeric x/y — skipped`); continue; }
+      let color = null;
+      if (r.length >= 4 && r[3]) {
+        hasColorCol = true;
+        color = parseColor(r[3]);
+        if (!color) badColorCount++;
+      }
+      allPoints.push({cluster: name, x, y});
+      if (!clusters[name]) { clusters[name] = {color: color}; clusterNames.push(name); }
+      if (color && !clusters[name].color) clusters[name].color = color;
+    }
+
+    if (allPoints.length === 0) { alert('No valid data rows found.'); return; }
+
+    // assign default palette where needed
+    const need = clusterNames.filter(n => !clusters[n].color);
+    if (need.length) {
+      const pal = generateDistinct(clusterNames.length);
+      if (need.length === clusterNames.length) {
+        clusterNames.forEach((n,i) => clusters[n].color = pal[i]);
+      } else {
+        need.forEach(n => { clusters[n].color = pal[clusterNames.indexOf(n)]; });
+      }
+    }
+    if (badColorCount) warnings.push(`${badColorCount} invalid color value(s) replaced with defaults.`);
+    showWarnings(warnings);
+
+    // stratified sample for display
+    displayPoints = stratifiedSample(allPoints, MAX_PREVIEW);
+    if (allPoints.length > MAX_PREVIEW) {
+      infoBar.textContent = `Showing ${displayPoints.length.toLocaleString()} of ${allPoints.length.toLocaleString()} cells (stratified sample). Export includes all cells.`;
+      infoBar.style.display = 'block';
+    } else {
+      infoBar.style.display = 'none';
+    }
+
+    uploadArea.style.display = 'none';
+    appSection.classList.add('visible');
+    initCanvas();
+    buildLegend();
+    draw();
+  }
+
+  function parseColor(s) {
+    s = s.trim().replace(/^["']|["']$/g, '');
+    if (/^#?[0-9a-fA-F]{6}$/.test(s)) return s.startsWith('#') ? s : '#' + s;
+    if (/^#?[0-9a-fA-F]{3}$/.test(s)) { s = s.replace('#',''); return '#' + s.split('').map(c=>c+c).join(''); }
+    return null;
+  }
+
+  function showWarnings(list) {
+    if (!list.length) { warning.style.display = 'none'; return; }
+    warning.textContent = list.join(' | ');
+    warning.style.display = 'block';
+  }
+
+  /* ── stratified sampling ── */
+  function stratifiedSample(pts, max) {
+    if (pts.length <= max) return pts.slice();
+
+    // group by cluster
+    const groups = {};
+    for (const p of pts) {
+      if (!groups[p.cluster]) groups[p.cluster] = [];
+      groups[p.cluster].push(p);
+    }
+
+    const names = Object.keys(groups);
+    const nClusters = names.length;
+    // at least 1 per cluster, rest distributed proportionally
+    const reserved = Math.min(nClusters, max);
+    const remaining = max - reserved;
+
+    const sampled = [];
+    // seeded pseudo-random for reproducibility
+    let seed = 42;
+    function rand() { seed = (seed * 16807 + 0) % 2147483647; return seed / 2147483647; }
+    function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
+
+    for (const name of names) {
+      const group = groups[name];
+      const proportion = group.length / pts.length;
+      const n = Math.max(1, Math.min(group.length, 1 + Math.floor(remaining * proportion)));
+      shuffle(group);
+      for (let i = 0; i < n; i++) sampled.push(group[i]);
+    }
+
+    shuffle(sampled);
+    return sampled;
+  }
+
+  /* ── palette generators ── */
+  function generateDistinct(n) {
+    const cols = [];
+    for (let i = 0; i < n; i++) cols.push(hslToHex((i * 360 / n) % 360, 70, 55));
+    return cols;
+  }
+  function generateRandom(n) {
+    const cols = [];
+    for (let i = 0; i < n; i++) cols.push(hslToHex(Math.random()*360, 55+Math.random()*30, 40+Math.random()*25));
+    return cols;
+  }
+  function hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const k = n => (n + h/30) % 12;
+    const a = s * Math.min(l, 1-l);
+    const f = n => l - a * Math.max(-1, Math.min(k(n)-3, 9-k(n), 1));
+    const toHex = v => Math.round(255*f(v)).toString(16).padStart(2,'0');
+    return '#' + toHex(0) + toHex(8) + toHex(4);
+  }
+
+  /* ── canvas setup & coordinate mapping ── */
+  let xMin, xMax, yMin, yMax, padL=50, padR=20, padT=20, padB=30;
+
+  function initCanvas() {
+    canvas.width = CANVAS_CSS * DPR;
+    canvas.height = CANVAS_H_CSS * DPR;
+    canvas.style.width = CANVAS_CSS + 'px';
+    canvas.style.height = CANVAS_H_CSS + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    xMin = Infinity; xMax = -Infinity; yMin = Infinity; yMax = -Infinity;
+    for (const p of allPoints) { if(p.x<xMin)xMin=p.x; if(p.x>xMax)xMax=p.x; if(p.y<yMin)yMin=p.y; if(p.y>yMax)yMax=p.y; }
+    const dx = (xMax-xMin)*0.05||1, dy=(yMax-yMin)*0.05||1;
+    xMin-=dx; xMax+=dx; yMin-=dy; yMax+=dy;
+  }
+
+  function toScreen(px, py) {
+    const sx = padL + (px - xMin)/(xMax - xMin) * (CANVAS_CSS - padL - padR);
+    const sy = padT + (1 - (py - yMin)/(yMax - yMin)) * (CANVAS_H_CSS - padT - padB);
+    return [sx, sy];
+  }
+
+  /* ── drawing ── */
+  function draw() {
+    ctx.clearRect(0, 0, CANVAS_CSS, CANVAS_H_CSS);
+    const r = ptRadius;
+    for (let i = 0; i < displayPoints.length; i++) {
+      const p = displayPoints[i];
+      const [sx, sy] = toScreen(p.x, p.y);
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI*2);
+      ctx.globalAlpha = (highlightCluster && highlightCluster !== p.cluster) ? 0.1 : 1;
+      ctx.fillStyle = clusters[p.cluster].color;
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /* ── legend ── */
+  function buildLegend() {
+    legendEl.innerHTML = '';
+    for (const name of clusterNames) {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      const swatch = document.createElement('div');
+      swatch.className = 'legend-swatch';
+      swatch.style.background = clusters[name].color;
+      const label = document.createElement('span');
+      label.textContent = name;
+      item.appendChild(swatch);
+      item.appendChild(label);
+      item.addEventListener('mouseenter', () => { highlightCluster = name; draw(); });
+      item.addEventListener('mouseleave', () => { highlightCluster = null; draw(); });
+      item.addEventListener('click', () => openPicker(name));
+      item._clusterName = name;
+      item._swatch = swatch;
+      legendEl.appendChild(item);
+    }
+  }
+  function updateLegendSwatches() {
+    for (const item of legendEl.children) {
+      item._swatch.style.background = clusters[item._clusterName].color;
+    }
+  }
+
+  /* ── canvas interaction ── */
+  function findClosest(mx, my) {
+    let closest = null, minD = Infinity;
+    for (let i = 0; i < displayPoints.length; i++) {
+      const [sx, sy] = toScreen(displayPoints[i].x, displayPoints[i].y);
+      const d = Math.hypot(sx - mx, sy - my);
+      if (d < minD) { minD = d; closest = i; }
+    }
+    return (closest !== null && minD < Math.max(ptRadius * 2, 12)) ? closest : null;
+  }
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const idx = findClosest(mx, my);
+    if (idx !== null) {
+      const p = displayPoints[idx];
+      highlightCluster = p.cluster;
+      tooltip.style.display = 'block';
+      tooltip.textContent = `${p.cluster}  ${clusters[p.cluster].color}`;
+      tooltip.style.left = (mx + 14) + 'px';
+      tooltip.style.top = (my - 10) + 'px';
+    } else {
+      highlightCluster = null;
+      tooltip.style.display = 'none';
+    }
+    draw();
+  });
+  canvas.addEventListener('mouseleave', () => { highlightCluster = null; tooltip.style.display = 'none'; draw(); });
+  canvas.addEventListener('click', e => {
+    const rect = canvas.getBoundingClientRect();
+    const idx = findClosest(e.clientX - rect.left, e.clientY - rect.top);
+    if (idx !== null) openPicker(displayPoints[idx].cluster);
+  });
+
+  /* ── color picker (live update) ── */
+  let pickerTarget = null;
+
+  function openPicker(name) {
+    pickerTarget = name;
+    const picker = document.getElementById('hidden-color');
+    // clone to clear old listeners
+    const fresh = picker.cloneNode(true);
+    picker.parentNode.replaceChild(fresh, picker);
+
+    fresh.value = clusters[name].color;
+    const update = () => {
+      clusters[pickerTarget].color = fresh.value;
+      draw();
+      updateLegendSwatches();
+    };
+    fresh.addEventListener('input', update);
+    fresh.addEventListener('change', update);
+    fresh.focus();
+    fresh.click();
+  }
+
+  /* ── controls ── */
+  ptSlider.addEventListener('input', () => { ptRadius = Number(ptSlider.value); ptVal.textContent = ptSlider.value; draw(); });
+
+  document.getElementById('btn-randomize').addEventListener('click', () => {
+    const pal = generateRandom(clusterNames.length);
+    clusterNames.forEach((n,i) => clusters[n].color = pal[i]);
+    draw(); updateLegendSwatches();
+  });
+  document.getElementById('btn-distinct').addEventListener('click', () => {
+    const pal = generateDistinct(clusterNames.length);
+    clusterNames.forEach((n,i) => clusters[n].color = pal[i]);
+    draw(); updateLegendSwatches();
+  });
+
+  /* ── export (always uses allPoints) ── */
+  document.getElementById('btn-export-csv').addEventListener('click', () => {
+    let csv = 'cluster,x,y,color\n';
+    for (const p of allPoints) csv += `${p.cluster},${p.x},${p.y},${clusters[p.cluster].color}\n`;
+    const blob = new Blob([csv], {type: 'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'palette.csv';
+    a.click();
+  });
+  document.getElementById('btn-copy-json').addEventListener('click', () => {
+    const obj = {};
+    clusterNames.forEach(n => obj[n] = clusters[n].color);
+    navigator.clipboard.writeText(JSON.stringify(obj, null, 2)).then(() => {
+      const btn = document.getElementById('btn-copy-json');
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = orig, 1500);
+    });
+  });
+})();
+</script>
+</body>
+</html>
